@@ -83,54 +83,60 @@ def segment_image(image,input_classes=CLASSES):
     detections.class_id = detections.class_id[nms_idx]
 
     print(f"After NMS: {len(detections.xyxy)} boxes")
+    # box_annotator = sv.BoxAnnotator()
+    # annotated_image = box_annotator.annotate(scene=image.copy(), detections=detections, labels=labels)
+    # cv2.imwrite("box_out.jpg", annotated_image)
+    # cv2.imshow("detections",annotated_image)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
+
+    # return detections
+
+    # Prompting SAM with detected boxes
+    def segment(sam_predictor: SamPredictor, image: np.ndarray, xyxy: np.ndarray) -> np.ndarray:
+        sam_predictor.set_image(image)
+        result_masks = []
+        for box in xyxy:
+            masks, scores, logits = sam_predictor.predict(
+                box=box,
+                multimask_output=True
+            )
+            index = np.argmax(scores)
+            result_masks.append(masks[index])
+        return np.array(result_masks)
+
+
+    # convert detections to masks
+    detections.mask = segment(
+        sam_predictor=sam_predictor,
+        image=cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
+        xyxy=detections.xyxy
+    )
+
+    binary_mask = detections.mask[0].astype(np.uint8)*255
+    #cv2.imwrite(args.OUT_FILE_BIN_MASK, binary_mask)
+
+    # annotate image with detections
     box_annotator = sv.BoxAnnotator()
-    annotated_image = box_annotator.annotate(scene=image.copy(), detections=detections, labels=labels)
-    cv2.imwrite("box_out.jpg", annotated_image)
-    cv2.imshow("detections",annotated_image)
+    mask_annotator = sv.MaskAnnotator()
+    #   labels = [
+    #       f"{input_classes[class_id]} {confidence:0.2f}" 
+    #       for _, _, confidence, class_id, _ 
+    #       in detections]
+    labels = [
+        f"{input_classes[class_id_item]} {confidence_item:0.2f}" 
+        for confidence_item, class_id_item in zip(detections.confidence, detections.class_id)
+    ]
+    annotated_image = mask_annotator.annotate(scene=image.copy(), detections=detections)
+    annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
+    # save the annotated grounded-sam image
+    cv2.imwrite("seg_out.jpg", annotated_image)
+    cv2.imshow("segmentations",annotated_image)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
-
     return detections
 
-    # # Prompting SAM with detected boxes
-    # def segment(sam_predictor: SamPredictor, image: np.ndarray, xyxy: np.ndarray) -> np.ndarray:
-    #     sam_predictor.set_image(image)
-    #     result_masks = []
-    #     for box in xyxy:
-    #         masks, scores, logits = sam_predictor.predict(
-    #             box=box,
-    #             multimask_output=True
-    #         )
-    #         index = np.argmax(scores)
-    #         result_masks.append(masks[index])
-    #     return np.array(result_masks)
-
-
-    # # convert detections to masks
-    # detections.mask = segment(
-    #     sam_predictor=sam_predictor,
-    #     image=cv2.cvtColor(image, cv2.COLOR_BGR2RGB),
-    #     xyxy=detections.xyxy
-    # )
-
-    # binary_mask = detections.mask[0].astype(np.uint8)*255
-    # #cv2.imwrite(args.OUT_FILE_BIN_MASK, binary_mask)
-
-    # # annotate image with detections
-    # box_annotator = sv.BoxAnnotator()
-    # mask_annotator = sv.MaskAnnotator()
-    # #   labels = [
-    # #       f"{input_classes[class_id]} {confidence:0.2f}" 
-    # #       for _, _, confidence, class_id, _ 
-    # #       in detections]
-    # labels = [
-    #     f"{input_classes[class_id_item]} {confidence_item:0.2f}" 
-    #     for confidence_item, class_id_item in zip(detections.confidence, detections.class_id)
-    # ]
-    # annotated_image = mask_annotator.annotate(scene=image.copy(), detections=detections)
-    # annotated_image = box_annotator.annotate(scene=annotated_image, detections=detections, labels=labels)
-    # # save the annotated grounded-sam image
-    # cv2.imwrite("seg_out.jpg", annotated_image)
+    # return detections
 
 #test
 if __name__=="__main__":

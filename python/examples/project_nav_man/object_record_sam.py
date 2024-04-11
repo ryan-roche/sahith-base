@@ -21,7 +21,7 @@ import grpc
 from google.protobuf import wrappers_pb2 as wrappers
 from class_defs import Nodes, Semantic_location, Object
 from geometry_msgs.msg import Pose, Point, Quaternion
-from visualiser import Visualiser  # Import the Visualiser class
+from visualization_wrapper.visualiser import Visualiser  # Import the Visualiser class
 
 
 import bosdyn.client.channel
@@ -109,9 +109,11 @@ class RecordingInterface(object):
         self.g_image_clicks=[]
         self.g_image_display=[]
 
-        self.object_classes=[
-            "Unknown", "Surface"
-            ]
+
+        self.object_classes=["Bottle", "Can","Handle"]
+        self.location_classes=["Floor","Tabletop","Shelf"]
+
+        self.thing_classes=self.object_classes+self.location_classes
         self.visualizer=Visualiser()
 
 
@@ -444,69 +446,79 @@ class RecordingInterface(object):
         waypoint_pose.orientation.x,waypoint_pose.orientation.y,waypoint_pose.orientation.z,waypoint_pose.orientation.w=curr_waypoint.waypoint_tform_ko.rotation.x,curr_waypoint.waypoint_tform_ko.rotation.y,curr_waypoint.waypoint_tform_ko.rotation.z,curr_waypoint.waypoint_tform_ko.rotation.w
         waypoint_node = Nodes(waypoint_name,waypoint_pose )
         
- 
+        print("waypoint position: "+ str(waypoint_pose.position.x)+" "+str(waypoint_pose.position.y)+" "+str(waypoint_pose.position.z))
         #capture objects
         image_client = self._robot.ensure_client(ImageClient.default_service_name)
-        image_request= [build_image_request(self._image_source[0],100 ),build_image_request(self._image_source[1],100,pixel_format="PIXEL_FORMAT_RGB_U8")]
-        depth_image,rgb_image=image_client.get_image(image_request)
-        #image_responses = image_client.get_image_from_sources(self._image_source)
-        #image_responses =image_client.get_image([image_client.build_image_request(source,pixel_format="PIXEL_FORMAT_RGB_U8") for source in self._image_source])
-        #image_responses = image_client.get_image_from_sources(image_request)
+        image_requests=[]
+        for i,source in enumerate(self._image_source):
+            image_requests.append(image_pb2.ImageRequest(image_source_name=self._image_source[i],quality_percent=100))
 
-        # if len(image_responses) <2:
-        #     print('Got invalid number of images: ' + str(len(image_responses)))
-        #     print("Needed 2 images (depth and rgb)")
-        #     print(image_responses)
-        #     assert False
-        img=np.frombuffer(rgb_image.shot.image.data,dtype=np.uint8)
-        img=cv2.imdecode(img,-1)
-        #img=cv2.rotate(img,cv2.ROTATE_90_CLOCKWISE)
-        #img = img.reshape(rgb_image.shot.image.rows, rgb_image.shot.image.cols,3)
-
-        # image = image_responses[1]
-
-        # if image.shot.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_DEPTH_U16:
-        #     dtype = np.uint16
-        # else:
-        #     dtype = np.uint8
-        # img = np.fromstring(image.shot.image.data, dtype=dtype)
-        # if image.shot.image.format == image_pb2.Image.FORMAT_RAW:
-        #     img = img.reshape(image.shot.image.rows, image.shot.image.cols)
-        # else:
-        #     img = cv2.imdecode(img, -1)
+        image_responses = image_client.get_image(image_requests)
+        if len(image_responses) < 2:
+            print('Error: failed to get images.')
+            return False
 
         # Depth is a raw bytestream
-        cv_depth = np.frombuffer(depth_image.shot.image.data, dtype=np.uint16)
-        cv_depth = cv_depth.reshape(depth_image.shot.image.rows,
-                                    depth_image.shot.image.cols)
+        cv_depth = np.frombuffer(image_responses[0].shot.image.data, dtype=np.uint16)
+        cv_depth = cv_depth.reshape(image_responses[0].shot.image.rows,
+                                    image_responses[0].shot.image.cols)
 
-        detections=segment_image(img,self.object_classes)
+        # Visual is a JPEG
+        cv_visual = cv2.imdecode(np.frombuffer(image_responses[1].shot.image.data, dtype=np.uint8), -1)
+
+        # Convert the visual image from a single channel to RGB so we can add color
+        visual_rgb = cv_visual if len(cv_visual.shape) == 3 else cv2.cvtColor(
+            cv_visual, cv2.COLOR_GRAY2RGB)
+
+        detections=segment_image(visual_rgb,self.thing_classes)
+
         for i in range(len(detections)):
-            y1, x1, y2, x2 = detections.xyxy[i].astype(int)
-            x,y=int((x1+x2)/2), int((y1+y2)/2)
-            #x, y = (detections[i].xyxy[0][0]+detections[i].xyxy[0][2])/2,(detections[i].xyxy[0][1]+detections[i].xyxy[0][3])/2
-            object_name = self.object_classes[detections[i].class_id[0]]  # Extract object name
+            depth_seg=detections.mask[i]*cv_depth
+            mean_depth=np.mean(depth_seg[depth_seg!=0])
+        
+            object_name = self.thing_classes[detections.class_id[i]]  # Extract object name
 
-            self._robot.logger.info(f'Object "{object_name}" at image location ({x}, {y}) added to graph')
-            pick_vec = geometry_pb2.Vec2(x=x, y=y)
+            try:
+                min_val_depth=np.min(depth_seg[depth_seg!=0])
+            except ValueError:
+                min_val_depth=0
+                object_name = self.thing_classes[detections[i].class_id[0]]  # Extract object name
+
+            non_zero_indices = np.argwhere(depth_seg != 0)
+            # Calculate the mean of these indices
+            
+            if non_zero_indices.size==0:
+                print(object_name+ " out of bound of depth camera's field of view")
+                continue
+            try:
+                mean_location = non_zero_indices.mean(axis=0)
+            except RuntimeWarning:
+                print(object_name+ " out of bound of depth camera's field of view")
+                continue
+
+            mean_location=mean_location.astype(np.int32)
+            
+            print(f'Object "{object_name}" at image location ({mean_location[0]}, {mean_location[1]}) added to graph')
+            
+            pick_vec = geometry_pb2.Vec2(x=mean_location[0], y=mean_location[1])
 
             # Build the proto for each point
             grasp = manipulation_api_pb2.PickObjectInImage(
                 pixel_xy=pick_vec, 
-                transforms_snapshot_for_camera=rgb_image.shot.transforms_snapshot,
-                frame_name_image_sensor=rgb_image.shot.frame_name_image_sensor,
-                camera_model=rgb_image.source.pinhole)
+                transforms_snapshot_for_camera=image_responses[1].shot.transforms_snapshot,
+                frame_name_image_sensor=image_responses[1].shot.frame_name_image_sensor,
+                camera_model=image_responses[1].source.pinhole)
             
-            depth_point=cv_depth[x,y]
+            depth_point=cv_depth[mean_location[0],mean_location[1]]
 
             
-            tform_snapshot = rgb_image.shot.transforms_snapshot
-            if(depth_point<1000): #depth less than 1 meter
-                pixel_point=pixel_to_camera_space(rgb_image,x,y,depth_point)
-                cam_to_world_tform = get_a_tform_b(tform_snapshot,rgb_image.shot.frame_name_image_sensor, VISION_FRAME_NAME)
+            tform_snapshot = image_responses[1].shot.transforms_snapshot
+            if(min_val_depth<1500): #depth less than 1 meter
+                pixel_point=pixel_to_camera_space(image_responses[1],mean_location[0],mean_location[1],depth_point/1000)
+                cam_to_world_tform = get_a_tform_b(tform_snapshot,image_responses[1].shot.frame_name_image_sensor, VISION_FRAME_NAME)
                 world_coord=cam_to_world_tform.transform_cloud(pixel_point)
                 
-                print("added "+str(object_name))
+                print("added "+str(object_name)+" at "+str(world_coord))
                 temp_pose=Pose()
                 temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
                 temp_pose.orientation.x=1
