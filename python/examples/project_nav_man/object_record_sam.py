@@ -19,7 +19,7 @@ import google.protobuf.timestamp_pb2
 import graph_nav_util
 import grpc
 from google.protobuf import wrappers_pb2 as wrappers
-from class_defs import Nodes, Semantic_location, Object
+from visualization_wrapper.class_defs import Nodes, Semantic_location, Object
 from geometry_msgs.msg import Pose, Point, Quaternion
 from visualization_wrapper.visualiser import Visualiser  # Import the Visualiser class
 
@@ -34,7 +34,7 @@ from bosdyn.client.math_helpers import Quat, SE3Pose
 from bosdyn.client.recording import GraphNavRecordingServiceClient
 from bosdyn.client.image import ImageClient, pixel_to_camera_space, build_image_request
 from bosdyn.api import geometry_pb2, image_pb2,manipulation_api_pb2
-from bosdyn.client.frame_helpers import get_a_tform_b, VISION_FRAME_NAME
+from bosdyn.client.frame_helpers import get_a_tform_b, ODOM_FRAME_NAME,get_odom_tform_body
 
 
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -435,15 +435,12 @@ class RecordingInterface(object):
             print("waypoint name not input")
             return
 
-        graph = self._graph_nav_client.download_graph()
-        curr_waypoint=None
-        for waypoint in graph.waypoints:
-            if waypoint.annotations.name == waypoint_name:
-                curr_waypoint=waypoint
-
-        waypoint_pose=Pose()
-        waypoint_pose.position.x,waypoint_pose.position.y,waypoint_pose.position.z= curr_waypoint.waypoint_tform_ko.position.x,curr_waypoint.waypoint_tform_ko.position.y,curr_waypoint.waypoint_tform_ko.position.z
-        waypoint_pose.orientation.x,waypoint_pose.orientation.y,waypoint_pose.orientation.z,waypoint_pose.orientation.w=curr_waypoint.waypoint_tform_ko.rotation.x,curr_waypoint.waypoint_tform_ko.rotation.y,curr_waypoint.waypoint_tform_ko.rotation.z,curr_waypoint.waypoint_tform_ko.rotation.w
+        state = self._graph_nav_client.get_localization_state()       
+        odom_tform_body = get_odom_tform_body(state.robot_kinematics.transforms_snapshot)
+        
+        waypoint_pose=Pose()    
+        waypoint_pose.position.x,waypoint_pose.position.y,waypoint_pose.position.z= odom_tform_body.x,odom_tform_body.y,odom_tform_body.z
+        waypoint_pose.orientation.x,waypoint_pose.orientation.y,waypoint_pose.orientation.z,waypoint_pose.orientation.w=odom_tform_body.rotation.x, odom_tform_body.rotation.y,odom_tform_body.rotation.z,odom_tform_body.rotation.w
         waypoint_node = Nodes(waypoint_name,waypoint_pose )
         
         print("waypoint position: "+ str(waypoint_pose.position.x)+" "+str(waypoint_pose.position.y)+" "+str(waypoint_pose.position.z))
@@ -498,7 +495,7 @@ class RecordingInterface(object):
 
             mean_location=mean_location.astype(np.int32)
             
-            print(f'Object "{object_name}" at image location ({mean_location[0]}, {mean_location[1]}) added to graph')
+            print(f'Found object "{object_name}" at image location ({mean_location[0]}, {mean_location[1]})')
             
             pick_vec = geometry_pb2.Vec2(x=mean_location[0], y=mean_location[1])
 
@@ -515,14 +512,14 @@ class RecordingInterface(object):
             tform_snapshot = image_responses[1].shot.transforms_snapshot
             if(min_val_depth<1500): #depth less than 1 meter
                 pixel_point=pixel_to_camera_space(image_responses[1],mean_location[0],mean_location[1],depth_point/1000)
-                cam_to_world_tform = get_a_tform_b(tform_snapshot,image_responses[1].shot.frame_name_image_sensor, VISION_FRAME_NAME)
+                cam_to_world_tform = get_a_tform_b(tform_snapshot,image_responses[1].shot.frame_name_image_sensor, ODOM_FRAME_NAME)
                 world_coord=cam_to_world_tform.transform_cloud(pixel_point)
                 
-                print("added "+str(object_name)+" at "+str(world_coord))
+                print("added "+str(object_name)+" at "+str(world_coord) +" to the graph")
                 temp_pose=Pose()
                 temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
                 temp_pose.orientation.x=1
-                loc_node= Semantic_location(object_name, temp_pose, curr_waypoint)
+                loc_node= Semantic_location(object_name, temp_pose, waypoint_name)
 
                 waypoint_node.add_location(loc_node)
                 #waypoint.annotations[object_name].CopyFrom(grasp)
@@ -573,89 +570,6 @@ class RecordingInterface(object):
             except Exception as e:
                 print(e)
 
-
-
-        # image_client = self._robot.ensure_client(ImageClient.default_service_name)
-
-
-        # # Take a picture with a camera
-        # self._robot.logger.info('Getting an image from: ' + self._image_source)
-        # image_responses = image_client.get_image_from_sources([self._image_source])
-
-        # if len(image_responses) != 1:
-        #     print('Got invalid number of images: ' + str(len(image_responses)))
-        #     print(image_responses)
-        #     assert False
-
-        # image = image_responses[0]
-        # if image.shot.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_DEPTH_U16:
-        #     dtype = np.uint16
-        # else:
-        #     dtype = np.uint8
-        # img = np.fromstring(image.shot.image.data, dtype=dtype)
-        # if image.shot.image.format == image_pb2.Image.FORMAT_RAW:
-        #     img = img.reshape(image.shot.image.rows, image.shot.image.cols)
-        # else:
-        #     img = cv2.imdecode(img, -1)
-
-        # # Show the image to the user and wait for them to click on a pixel
-        # self._robot.logger.info('Click on an object to start grasping...')
-        # image_title = 'Click to grasp'
-        # cv2.namedWindow(image_title)
-        # cv2.setMouseCallback(image_title, self.cv_mouse_callback)
-
-        # global g_image_click, g_image_display
-        # g_image_display = img
-        # cv2.imshow(image_title, g_image_display)
-        # while g_image_click is None:
-        #     key = cv2.waitKey(1) & 0xFF
-        #     if key == ord('q') or key == ord('Q'):
-        #         # Quit
-        #         print('"q" pressed, exiting.')
-        #         exit(0)
-
-        # self._robot.logger.info('Object at image location (' + str(g_image_click[0]) + ', ' +
-        #                 str(g_image_click[1]) + ') added to graph')
-
-        # pick_vec = geometry_pb2.Vec2(x=g_image_click[0], y=g_image_click[1])
-
-        # # Build the proto
-        # grasp = manipulation_api_pb2.PickObjectInImage(
-        #     pixel_xy=pick_vec, transforms_snapshot_for_camera=image.shot.transforms_snapshot,
-        #     frame_name_image_sensor=image.shot.frame_name_image_sensor,
-        #     camera_model=image.source.pinhole)
-        
-        # waypoint_name = input('Enter Waypoint Name: ')
-        # resp = self._recording_client.create_waypoint(waypoint_name=waypoint_name)
-        # if resp.status == recording_pb2.CreateWaypointResponse.STATUS_OK:
-        #     print("Successfully created a waypoint= "+waypoint_name)
-        # else:
-        #     print("Could not create a waypoint.")
-
-        # waypoint_id = resp.waypoint_id
-
-        # # Retrieve the current graph
-        # graph = self._graph_nav_client.download_graph()
-
-        # # Find the new waypoint in the graph
-        # waypoint = self._find_waypoint_in_graph(graph, waypoint_id)
-        # if waypoint is None:
-        #     print(f"Waypoint with ID {waypoint_id} not found.")
-        #     return False
-
-        
-        # # Add annotations to the waypoint
-        # # for key, value in annotations_dict.items():
-        # #     # The value must be a protobuf message
-        # #     annotation = any_pb2.Any()
-        # #     annotation.Pack(value)
-        # waypoint.annotations[waypoint_name].CopyFrom(grasp)
-
-        # # Upload the modified graph back to the robot
-        # self._graph_nav_client.upload_graph(graph)
-
-        # print(f"Successfully created waypoint with ID {waypoint_id} and added annotations.")
-        # return True
 
 
     def _get_waypoint(self, id):

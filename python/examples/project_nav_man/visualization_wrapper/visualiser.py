@@ -10,7 +10,7 @@ import os
 
 class Visualiser:
     def __init__(self):
-        rospy.init_node('visualizer', log_level=rospy.DEBUG)
+        rospy.init_node('visualizer', log_level=rospy.INFO)
         rospy.logdebug("Visualizer node started")
         self.marker_pub = rospy.Publisher("/visualization_marker", Marker, queue_size = 10)
         self.marker_array_pub = rospy.Publisher("/visualization_marker_array", MarkerArray, queue_size=10)
@@ -40,7 +40,7 @@ class Visualiser:
         marker_shape={"node":3,"location":1,"object":2}
         marker_scale={"node":1,"location":0.5,"object":0.2}
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = "odom"
         marker.header.stamp = rospy.Time.now()
         marker.type = marker_shape[marker_type]
         marker.action = 0
@@ -71,7 +71,7 @@ class Visualiser:
         marker.lifetime = rospy.Duration()
 
         text_marker = Marker()
-        text_marker.header.frame_id = "map"
+        text_marker.header.frame_id = "odom"
         text_marker.header.stamp = rospy.Time.now()
         text_marker.type = Marker.TEXT_VIEW_FACING
         text_marker.action = Marker.ADD
@@ -101,7 +101,7 @@ class Visualiser:
     def remove_marker(self, data,pose2=None):
         rospy.logdebug("Removing marker")
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = "odom"
         marker.header.stamp = rospy.Time.now()
         marker.type = 3
         marker.action = 2
@@ -114,7 +114,7 @@ class Visualiser:
     def remove_line(self, pose1, pose2):
         rospy.logdebug("Removing line")
         marker = Marker()
-        marker.header.frame_id = "map"
+        marker.header.frame_id = "odom"
         marker.header.stamp = rospy.Time.now()
         marker.type = Marker.LINE_LIST
         marker.action = 2
@@ -135,7 +135,7 @@ class Visualiser:
     def make_line(self,pose1,pose2,flag=0):
         rospy.logdebug("Making line")
         line_marker = Marker()
-        line_marker.header.frame_id = "map"
+        line_marker.header.frame_id = "odom"
         line_marker.header.stamp = rospy.Time.now()
         line_marker.ns = self.make_line_name(pose1,pose2)
         
