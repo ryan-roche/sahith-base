@@ -539,7 +539,7 @@ class RecordingInterface(object):
             tform_snapshot = image_responses[1].shot.transforms_snapshot
             if(min_val_depth<1500): #depth less than 1 meter
                 pixel_point=pixel_to_camera_space(image_responses[1],mean_location[0],mean_location[1],depth_point/1000)
-                cam_to_world_tform = get_a_tform_b(tform_snapshot,image_responses[1].shot.frame_name_image_sensor, ODOM_FRAME_NAME)
+                cam_to_world_tform = get_a_tform_b(tform_snapshot,ODOM_FRAME_NAME,image_responses[1].shot.frame_name_image_sensor)
                 world_coord=cam_to_world_tform.transform_cloud(pixel_point)
                 
                 print("added "+str(object_name)+" at "+str(world_coord) +" to the graph")
