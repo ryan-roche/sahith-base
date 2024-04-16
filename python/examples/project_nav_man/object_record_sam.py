@@ -422,7 +422,34 @@ class RecordingInterface(object):
 
         cv2.imshow(image_title, clone)
 
-
+    def inter_over_area(self, obj, semantic_location):
+        # Get bounding boxes
+        obj_bbox = obj.get_bbox()  # (x1, y1, x2, y2)
+        location_bbox = semantic_location.get_bbox()  # (x1, y1, x2, y2)
+        
+        # Calculate the intersection box coordinates
+        ix1 = max(obj_bbox[0], location_bbox[0])
+        iy1 = max(obj_bbox[1], location_bbox[1])
+        ix2 = min(obj_bbox[2], location_bbox[2])
+        iy2 = min(obj_bbox[3], location_bbox[3])
+        
+        # Check if there is an intersection
+        if ix1 < ix2 and iy1 < iy2:
+            intersection_area = (ix2 - ix1) * (iy2 - iy1)
+        else:
+            intersection_area = 0
+        
+        # Calculate each box's area
+        obj_area = (obj_bbox[2] - obj_bbox[0]) * (obj_bbox[3] - obj_bbox[1])
+        location_area = (location_bbox[2] - location_bbox[0]) * (location_bbox[3] - location_bbox[1])
+        
+        # Calculate Intersection over Union
+        if obj_area == 0:
+            return 0  # to avoid division by zero if both areas are zero
+        else:
+            iou = intersection_area / obj_area
+            return iou   
+        
     def _create_waypoint_and_capt_obj_node(self,*args):
         print("capturing waypoint")
         wp_name=input("Enter waypoint name: ")
@@ -520,10 +547,10 @@ class RecordingInterface(object):
                 temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
                 temp_pose.orientation.x=1
                 if object_name in self.location_classes:
-                    loc_node= Semantic_location(object_name, temp_pose, waypoint_name)
+                    loc_node= Semantic_location(object_name, temp_pose, waypoint_name,detections.xyxy[i])
                     waypoint_node.add_location(loc_node)
                 else:
-                    obj_node= Object(object_name,temp_pose)
+                    obj_node= Object(object_name,temp_pose,detections.xyxy[i])
                     obj_list.append(obj_node)
                 #waypoint.annotations[object_name].CopyFrom(grasp)
 
