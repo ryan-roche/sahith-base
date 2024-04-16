@@ -468,7 +468,7 @@ class RecordingInterface(object):
             cv_visual, cv2.COLOR_GRAY2RGB)
 
         detections=segment_image(visual_rgb,self.thing_classes)
-
+        obj_list=[]
         for i in range(len(detections)):
             depth_seg=detections.mask[i]*cv_depth
             mean_depth=np.mean(depth_seg[depth_seg!=0])
@@ -519,13 +519,25 @@ class RecordingInterface(object):
                 temp_pose=Pose()
                 temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
                 temp_pose.orientation.x=1
-                loc_node= Semantic_location(object_name, temp_pose, waypoint_name)
-
-                waypoint_node.add_location(loc_node)
+                if object_name in self.location_classes:
+                    loc_node= Semantic_location(object_name, temp_pose, waypoint_name)
+                    waypoint_node.add_location(loc_node)
+                else:
+                    obj_node= Object(object_name,temp_pose)
+                    obj_list.append(obj_node)
                 #waypoint.annotations[object_name].CopyFrom(grasp)
 
-        # Upload the m odified graph back to the robot
-
+        # Upload the modified graph back to the robot
+        for obj in obj_list:
+            max_inter,max_location=0,None
+            for semantic_location in waypoint_node.get_locations():
+                inter=self.inter_over_area(obj,semantic_location)
+                if inter>max_inter:
+                    max_location=semantic_location
+                    max_inter=inter
+            if max_location:
+                max_location.add_object(obj)
+                obj.add_location(max_location)
         self.visualizer.visualise_node(waypoint_node)
         #self._graph_nav_client.upload_graph(graph)
         print(f"Successfully added objects.")
