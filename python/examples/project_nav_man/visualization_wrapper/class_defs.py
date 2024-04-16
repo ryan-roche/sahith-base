@@ -8,6 +8,9 @@ class Object:
         self.pose = pose
         self.location =location
     
+    def add_location(self,location):
+        self.location=location
+        
     def get_pose(self):
         return self.pose
 
