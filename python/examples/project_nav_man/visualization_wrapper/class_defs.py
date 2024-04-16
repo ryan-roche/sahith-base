@@ -3,7 +3,7 @@ from geometry_msgs.msg import Pose
 
 class Object:
     # Contains object name and pose of object
-    def __init__(self, name, pose,location):
+    def __init__(self, name, pose,location=None):
         self.name = name
         self.pose = pose
         self.location =location
