@@ -51,6 +51,9 @@ class Visualiser:
         marker.scale.x = 0.2*marker_scale[marker_type]
         marker.scale.y = 0.2*marker_scale[marker_type]
         marker.scale.z = marker_scale[marker_type]
+        if marker_type=="object":
+            marker.scale.x=marker_scale[marker_type]
+            marker.scale.y=marker_scale[marker_type]
         marker.color.r = 0.0
         marker.color.g = 0.0
         marker.color.b = 0.0
@@ -60,6 +63,7 @@ class Visualiser:
             marker.color.g = 1.0
         elif marker_type == "object":
             marker.color.b = 1.0
+            marker.color.r = 1.0
         
         marker.color.a = 1.0
         marker.pose.position.x = data.pose.position.x
