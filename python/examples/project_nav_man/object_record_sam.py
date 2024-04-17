@@ -216,6 +216,9 @@ class RecordingInterface(object):
         with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
             pickle.dump(self.waypoint_nodes, file)
 
+        with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
+            pickle.dump(self.waypoint_nodes, file)
+
     def _write_full_graph(self, graph):
         """Download the graph from robot to the specified, local filepath location."""
         graph_bytes = graph.SerializeToString()
