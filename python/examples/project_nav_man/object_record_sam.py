@@ -116,6 +116,8 @@ class RecordingInterface(object):
         self.thing_classes=self.object_classes+self.location_classes
         self.visualizer=Visualiser()
 
+        self.waypoint_nodes=[]
+
 
     def should_we_start_recording(self):
         # Before starting to record, check the state of the GraphNav system.
@@ -210,6 +212,9 @@ class RecordingInterface(object):
         # Download the waypoint and edge snapshots.
         self._download_and_write_waypoint_snapshots(graph.waypoints)
         self._download_and_write_edge_snapshots(graph.edges)
+
+        with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
+            pickle.dump(self.waypoint_nodes, file)
 
     def _write_full_graph(self, graph):
         """Download the graph from robot to the specified, local filepath location."""
@@ -566,6 +571,7 @@ class RecordingInterface(object):
                 max_location.add_object(obj)
                 obj.add_location(max_location)
         self.visualizer.visualise_node(waypoint_node)
+        self.waypoint_nodes.append(waypoint_node)
         #self._graph_nav_client.upload_graph(graph)
         print(f"Successfully added objects.")
         
