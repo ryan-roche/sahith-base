@@ -22,6 +22,7 @@ from google.protobuf import wrappers_pb2 as wrappers
 from visualization_wrapper.class_defs import Nodes, Semantic_location, Object
 from geometry_msgs.msg import Pose, Point, Quaternion
 from visualization_wrapper.visualiser import Visualiser  # Import the Visualiser class
+import pickle
 
 
 import bosdyn.client.channel
@@ -115,6 +116,8 @@ class RecordingInterface(object):
 
         self.thing_classes=self.object_classes+self.location_classes
         self.visualizer=Visualiser()
+
+        self.waypoint_nodes=[]
 
 
     def should_we_start_recording(self):
@@ -210,6 +213,8 @@ class RecordingInterface(object):
         # Download the waypoint and edge snapshots.
         self._download_and_write_waypoint_snapshots(graph.waypoints)
         self._download_and_write_edge_snapshots(graph.edges)
+        with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
+            pickle.dump(self.waypoint_nodes, file)
 
     def _write_full_graph(self, graph):
         """Download the graph from robot to the specified, local filepath location."""
@@ -449,7 +454,13 @@ class RecordingInterface(object):
         else:
             iou = intersection_area / obj_area
             return iou   
-        
+
+    def get_dist(self,obj,semantic_location):
+        obj_pose=obj.get_pose()
+        loc_pose=semantic_location.get_pose()
+        dist= np.sqrt(np.square(obj_pose.position.x-loc_pose.position.x)+np.square(obj_pose.position.y-loc_pose.position.y)+np.square(obj_pose.position.z-loc_pose.position.z))
+        return dist
+
     def _create_waypoint_and_capt_obj_node(self,*args):
         print("capturing waypoint")
         wp_name=input("Enter waypoint name: ")
@@ -537,7 +548,7 @@ class RecordingInterface(object):
 
             
             tform_snapshot = image_responses[1].shot.transforms_snapshot
-            if(min_val_depth<1500): #depth less than 1 meter
+            if(min_val_depth<2000): #depth less than 1 meter
                 pixel_point=pixel_to_camera_space(image_responses[1],mean_location[0],mean_location[1],depth_point/1000)
                 cam_to_world_tform = get_a_tform_b(tform_snapshot,ODOM_FRAME_NAME,image_responses[1].shot.frame_name_image_sensor)
                 world_coord=cam_to_world_tform.transform_cloud(pixel_point)
@@ -556,16 +567,24 @@ class RecordingInterface(object):
 
         # Upload the modified graph back to the robot
         for obj in obj_list:
-            max_inter,max_location=0,None
+            max_inter,max_location,min_dist,closest_loc=0,None,1e7,None
             for semantic_location in waypoint_node.get_locations():
                 inter=self.inter_over_area(obj,semantic_location)
+                dist=self.get_dist(obj,semantic_location)
                 if inter>max_inter:
                     max_location=semantic_location
                     max_inter=inter
+                if dist<min_dist:
+                    closest_loc=semantic_location
+                    min_dist=dist
             if max_location:
                 max_location.add_object(obj)
                 obj.add_location(max_location)
+            elif min_dist<1e7:
+                closest_loc.add_object(obj)
+                obj.add_location(closest_loc)
         self.visualizer.visualise_node(waypoint_node)
+        self.waypoint_nodes.append(waypoint_node)
         #self._graph_nav_client.upload_graph(graph)
         print(f"Successfully added objects.")
         
