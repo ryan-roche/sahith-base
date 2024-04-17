@@ -36,6 +36,7 @@ class Visualiser:
         return "line" + str(pose1.position.x)[0] + str(pose1.position.y)[0] + str(pose1.position.z)[0] + str(pose1.orientation.x)[0] + str(pose1.orientation.y)[0] + str(pose1.orientation.z)[0] + str(pose1.orientation.w)[0] + str(pose2.position.x)[0] + str(pose2.position.y)[0] + str(pose2.position.z)[0] + str(pose2.orientation.x)[0] + str(pose2.orientation.y)[0] + str(pose2.orientation.z)[0] + str(pose2.orientation.w)[0]
     
     def make_marker(self, data,marker_type,name=None):
+        #making marker
         rospy.logdebug("Making marker")
         marker_shape={"node":1,"location":3,"object":2}
         marker_scale={"node":1,"location":0.5,"object":0.2}
