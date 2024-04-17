@@ -556,7 +556,7 @@ class GraphNavInterface(object):
         manipulation_api_client = self._robot.ensure_client(ManipulationApiClient.default_service_name)
 
 
-        # Take a picture with a camera
+        # Take a picture with a camera 
         self._robot.logger.info('Getting an image from: ' + 'frontleft_fisheye_image')
         image_responses = image_client.get_image_from_sources(['frontleft_fisheye_image'])
 
