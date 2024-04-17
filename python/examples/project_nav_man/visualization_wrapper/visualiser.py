@@ -10,7 +10,7 @@ import os
 
 class Visualiser:
     def __init__(self):
-        rospy.init_node('visualizer', log_level=rospy.INFO)
+        rospy.init_node('visualizer', log_level=rospy.DEBUG)
         rospy.logdebug("Visualizer node started")
         self.marker_pub = rospy.Publisher("/visualization_marker", Marker, queue_size = 10)
         self.marker_array_pub = rospy.Publisher("/visualization_marker_array", MarkerArray, queue_size=10)
@@ -37,7 +37,7 @@ class Visualiser:
     
     def make_marker(self, data,marker_type,name=None):
         rospy.logdebug("Making marker")
-        marker_shape={"node":3,"location":1,"object":2}
+        marker_shape={"node":1,"location":3,"object":2}
         marker_scale={"node":1,"location":0.5,"object":0.2}
         marker = Marker()
         marker.header.frame_id = "odom"
@@ -47,8 +47,8 @@ class Visualiser:
         marker.ns = self.make_name(data)
         
         marker.id = 1
-        marker.scale.x = marker_scale[marker_type]
-        marker.scale.y = marker_scale[marker_type]
+        marker.scale.x = 0.2*marker_scale[marker_type]
+        marker.scale.y = 0.2*marker_scale[marker_type]
         marker.scale.z = marker_scale[marker_type]
         marker.color.r = 0.0
         marker.color.g = 0.0
