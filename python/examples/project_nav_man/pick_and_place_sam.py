@@ -18,6 +18,7 @@ import numpy as np
 import google.protobuf.timestamp_pb2
 import graph_nav_util
 import grpc
+import pickle
 
 import bosdyn.client.channel
 import bosdyn.client.util
@@ -34,6 +35,10 @@ from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient,
 from bosdyn.client.robot_state import RobotStateClient
 from bosdyn.client.image import ImageClient
 from bosdyn.client.manipulation_api_client import ManipulationApiClient
+
+from grounded_sam_spot_package.grounded_sam_process import segment_image
+from visualization_wrapper.visualiser import Visualiser  # Import the Visualiser class
+
 g_image_click = None
 g_image_display = None
 
@@ -117,6 +122,10 @@ class GraphNavInterface(object):
             'p': self._pick_object_at_waypt,
             'd': self._drop_object_at_waypt
         }
+
+        self._image_source='hand_color_image'
+        self.waypoint_nodes=None
+        self.visualizer=Visualiser()
 
     def _get_localization_state(self, *args):
         """Get the current localization and state of the robot."""
@@ -230,6 +239,11 @@ class GraphNavInterface(object):
             print("\n")
             print("Upload complete! The robot is currently not localized to the map; please localize", \
                    "the robot using commands (2) or (3) before attempting a navigation command.")
+            
+        with open(self._upload_filepath +'semantic_locations.pkl', 'wb') as file:
+            self.waypoint_nodes=pickle.load(file)
+        for waypoint_node in self.waypoint_nodes:
+            self.visualizer.visualise_node(waypoint_node)
 
     def _navigate_to_anchor(self, *args):
         """Navigate to a pose in seed frame, using anchors."""
@@ -532,71 +546,102 @@ class GraphNavInterface(object):
         #     # Sit the robot down + power off after the navigation command is complete.
         #     self.toggle_power(should_power_on=False)   
 
-    def arm_object_grasp(self,*args):
+    def arm_object_grasp(self,obj_to_grasp=None,*args):
         """A simple example of using the Boston Dynamics API to command Spot's arm."""
 
-        # # See hello_spot.py for an explanation of these lines.
-        # bosdyn.client.util.setup_logging(config.verbose)
-
-        # sdk = bosdyn.client.create_standard_sdk('ArmObjectGraspClient')
-        # robot = sdk.create_robot("192.168.80.3")
-        # bosdyn.client.util.authenticate(robot)
-        # robot.time_sync.wait_for_sync()
-
-        # assert robot.has_arm(), "Robot requires an arm to run this example."
-
-        # # Verify the robot is not estopped and that an external application has registered and holds
-        # # an estop endpoint.
-        # verify_estop(robot)
-
-        # lease_client = robot.ensure_client(bosdyn.client.lease.LeaseClient.default_service_name)
-        # robot_state_client = robot.ensure_client(RobotStateClient.default_service_name)
         image_client = self._robot.ensure_client(ImageClient.default_service_name)
-
         manipulation_api_client = self._robot.ensure_client(ManipulationApiClient.default_service_name)
-
-
-        # Take a picture with a camera 
-        self._robot.logger.info('Getting an image from: ' + 'frontleft_fisheye_image')
-        image_responses = image_client.get_image_from_sources(['frontleft_fisheye_image'])
+        
+        image_requests=[]
+        for i,source in enumerate(self._image_source):
+            image_requests.append(image_pb2.ImageRequest(image_source_name=self._image_source[i],quality_percent=100))
+            self._robot.logger.info('Getting an image from: ' + self._image_source[i])
+        image_responses = image_client.get_image(image_requests)
 
         if len(image_responses) != 1:
             print('Got invalid number of images: ' + str(len(image_responses)))
             print(image_responses)
             assert False
 
+        cv_visual = cv2.imdecode(np.frombuffer(image_responses[0].shot.image.data, dtype=np.uint8), -1)
+
+        # Convert the visual image from a single channel to RGB so we can add color
+        visual_rgb = cv_visual if len(cv_visual.shape) == 3 else cv2.cvtColor(
+            cv_visual, cv2.COLOR_GRAY2RGB)
+
+        detections=segment_image(visual_rgb,self.thing_classes)
+        obj_list=[]
+        for i in range(len(detections)):
+            object_name = self.thing_classes[detections.class_id[i]]  # Extract object name
+            if object_name==obj_to_grasp:
+                depth_seg=detections.mask[i]
+                non_zero_indices = np.argwhere(depth_seg != 0)
+                # Calculate the mean of these indices
+                
+                if non_zero_indices.size==0:
+                    print(object_name+ " out of bound of depth camera's field of view")
+                    continue
+                try:
+                    mean_location = non_zero_indices.mean(axis=0)
+                except RuntimeWarning:
+                    print(object_name+ " out of bound of depth camera's field of view")
+                    continue
+
+                mean_location=mean_location.astype(np.int32)
+                
+                print(f'Found object "{object_name}" at image location ({mean_location[0]}, {mean_location[1]})')
+                
+                pick_vec = geometry_pb2.Vec2(x=mean_location[0], y=mean_location[1])
+                break
+
+
+
+        # image_client = self._robot.ensure_client(ImageClient.default_service_name)
+
+        # manipulation_api_client = self._robot.ensure_client(ManipulationApiClient.default_service_name)
+
+
+        # # Take a picture with a camera 
+        # self._robot.logger.info('Getting an image from: ' + 'frontleft_fisheye_image')
+        # image_responses = image_client.get_image_from_sources(['frontleft_fisheye_image'])
+
+        # if len(image_responses) != 1:
+        #     print('Got invalid number of images: ' + str(len(image_responses)))
+        #     print(image_responses)
+        #     assert False
+
+        # image = image_responses[0]
+        # if image.shot.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_DEPTH_U16:
+        #     dtype = np.uint16
+        # else:
+        #     dtype = np.uint8
+        # img = np.fromstring(image.shot.image.data, dtype=dtype)
+        # if image.shot.image.format == image_pb2.Image.FORMAT_RAW:
+        #     img = img.reshape(image.shot.image.rows, image.shot.image.cols)
+        # else:
+        #     img = cv2.imdecode(img, -1)
+
+        # # Show the image to the user and wait for them to click on a pixel
+        # self._robot.logger.info('Click on an object to start grasping...')
+        # image_title = 'Click to grasp'
+        # cv2.namedWindow(image_title)
+        # cv2.setMouseCallback(image_title, cv_mouse_callback)
+
+        # global g_image_click, g_image_display
+        # g_image_display = img
+        # cv2.imshow(image_title, g_image_display)
+        # while g_image_click is None:
+        #     key = cv2.waitKey(1) & 0xFF
+        #     if key == ord('q') or key == ord('Q'):
+        #         # Quit
+        #         print('"q" pressed, exiting.')
+        #         exit(0)
+
+        # self._robot.logger.info('Picking object at image location (' + str(g_image_click[0]) + ', ' +
+        #                 str(g_image_click[1]) + ')')
+
+        #pick_vec = geometry_pb2.Vec2(x=g_image_click[0], y=g_image_click[1])
         image = image_responses[0]
-        if image.shot.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_DEPTH_U16:
-            dtype = np.uint16
-        else:
-            dtype = np.uint8
-        img = np.fromstring(image.shot.image.data, dtype=dtype)
-        if image.shot.image.format == image_pb2.Image.FORMAT_RAW:
-            img = img.reshape(image.shot.image.rows, image.shot.image.cols)
-        else:
-            img = cv2.imdecode(img, -1)
-
-        # Show the image to the user and wait for them to click on a pixel
-        self._robot.logger.info('Click on an object to start grasping...')
-        image_title = 'Click to grasp'
-        cv2.namedWindow(image_title)
-        cv2.setMouseCallback(image_title, cv_mouse_callback)
-
-        global g_image_click, g_image_display
-        g_image_display = img
-        cv2.imshow(image_title, g_image_display)
-        while g_image_click is None:
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord('q') or key == ord('Q'):
-                # Quit
-                print('"q" pressed, exiting.')
-                exit(0)
-
-        self._robot.logger.info('Picking object at image location (' + str(g_image_click[0]) + ', ' +
-                        str(g_image_click[1]) + ')')
-
-        pick_vec = geometry_pb2.Vec2(x=g_image_click[0], y=g_image_click[1])
-
         # Build the proto
         grasp = manipulation_api_pb2.PickObjectInImage(
             pixel_xy=pick_vec, transforms_snapshot_for_camera=image.shot.transforms_snapshot,
