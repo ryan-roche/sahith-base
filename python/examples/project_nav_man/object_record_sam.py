@@ -98,7 +98,8 @@ class RecordingInterface(object):
             '8': self._create_loop,
             '9': self._auto_close_loops_prompt,
             'a': self._optimize_anchoring,
-            'o': self._add_object
+            'o': self._add_object,
+            'v': self._visualize_all_nodes
         }
         # camera='frontleft'
         # self._image_source=[camera + '_depth_in_visual_frame',camera + '_fisheye_image']
@@ -111,7 +112,7 @@ class RecordingInterface(object):
         self.g_image_display=[]
 
 
-        self.object_classes=["Bottle", "Can","Handle"]
+        self.object_classes=["Bottle", "Clamp","Rubicks Cube","Brush"]
         self.location_classes=["Floor","Tabletop","Shelf"]
 
         self.thing_classes=self.object_classes+self.location_classes
@@ -213,9 +214,6 @@ class RecordingInterface(object):
         # Download the waypoint and edge snapshots.
         self._download_and_write_waypoint_snapshots(graph.waypoints)
         self._download_and_write_edge_snapshots(graph.edges)
-        with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
-            pickle.dump(self.waypoint_nodes, file)
-
         with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
             pickle.dump(self.waypoint_nodes, file)
 
@@ -470,6 +468,10 @@ class RecordingInterface(object):
         self._create_custom_waypoint(wp_name)
         self._capt_object(wp_name)
 
+    def _visualize_all_nodes(self,*args):
+        for waypoint_node in self.waypoint_nodes:
+            self.visualizer.visualise_node(waypoint_node)
+
     def _capt_object(self,waypoint_name=None,*args):
 
         if(waypoint_name==None):
@@ -508,7 +510,7 @@ class RecordingInterface(object):
         visual_rgb = cv_visual if len(cv_visual.shape) == 3 else cv2.cvtColor(
             cv_visual, cv2.COLOR_GRAY2RGB)
 
-        detections=segment_image(visual_rgb,self.thing_classes)
+        detections,annotated_image=segment_image(visual_rgb,self.thing_classes)
         obj_list=[]
         for i in range(len(detections)):
             depth_seg=detections.mask[i]*cv_depth
@@ -536,9 +538,9 @@ class RecordingInterface(object):
 
             mean_location=mean_location.astype(np.int32)
             
-            print(f'Found object "{object_name}" at image location ({mean_location[0]}, {mean_location[1]})')
-            
-            pick_vec = geometry_pb2.Vec2(x=mean_location[0], y=mean_location[1])
+            print(f'Found object "{object_name}" at image location ({mean_location[1]}, {mean_location[0]})')
+
+            pick_vec = geometry_pb2.Vec2(x=mean_location[1], y=mean_location[0])
 
             # Build the proto for each point
             grasp = manipulation_api_pb2.PickObjectInImage(
@@ -560,6 +562,10 @@ class RecordingInterface(object):
                 temp_pose=Pose()
                 temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
                 temp_pose.orientation.x=1
+                annotated_image=cv2.circle(annotated_image,(mean_location[1], mean_location[0]),radius=20,color=(0,0,255),thickness=-1)
+                cv2.imshow("segmentations",annotated_image)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
                 if object_name in self.location_classes:
                     loc_node= Semantic_location(object_name, temp_pose, waypoint_name,detections.xyxy[i])
                     waypoint_node.add_location(loc_node)
@@ -681,6 +687,7 @@ class RecordingInterface(object):
             (9) Automatically find and close loops.
             (a) Optimize the map's anchoring.
             (o) Add object node
+            (v) Visualize all nodes
             (q) Exit.
             """)
             try:

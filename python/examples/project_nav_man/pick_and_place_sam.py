@@ -14,6 +14,7 @@ import sys
 import time
 import cv2
 import numpy as np
+import supervision as sv
 
 import google.protobuf.timestamp_pb2
 import graph_nav_util
@@ -120,10 +121,15 @@ class GraphNavInterface(object):
             '8': self._navigate_to_anchor,
             '9': self._clear_graph,
             'p': self._pick_object_at_waypt,
-            'd': self._drop_object_at_waypt
+            'd': self._drop_object_at_waypt,
+            's': self._search_in_graph
         }
 
-        self._image_source='hand_color_image'
+        self.object_classes=["Bottle", "Can","Handle"]
+        self.location_classes=["Floor","Tabletop","Shelf"]
+        self.thing_classes=self.object_classes+self.location_classes
+
+        self._image_source=['hand_color_image']
         self.waypoint_nodes=None
         self.visualizer=Visualiser()
 
@@ -239,9 +245,10 @@ class GraphNavInterface(object):
             print("\n")
             print("Upload complete! The robot is currently not localized to the map; please localize", \
                    "the robot using commands (2) or (3) before attempting a navigation command.")
-            
-        with open(self._upload_filepath +'semantic_locations.pkl', 'wb') as file:
-            self.waypoint_nodes=pickle.load(file)
+        print("reading filepath")
+        with open(self._upload_filepath + '/semantic_locations.pkl', 'rb') as file:  # Open file in read-binary mode
+            self.waypoint_nodes = pickle.load(file)
+        
         for waypoint_node in self.waypoint_nodes:
             self.visualizer.visualise_node(waypoint_node)
 
@@ -501,7 +508,75 @@ class GraphNavInterface(object):
 
         time.sleep(1)
         
-       
+    def _pick_object(self,*args):
+        waypoint_name=self._search_in_graph(*args)
+        destination_waypoint = graph_nav_util.find_unique_waypoint_id(
+            waypoint_name, self._current_graph, self._current_annotation_name_to_wp_id)
+        if not destination_waypoint:
+            # Failed to find the appropriate unique waypoint id for the navigation command.
+            return
+        if not self.toggle_power(should_power_on=True):
+            print("Failed to power on the robot, and cannot complete navigate to request.")
+            return
+
+        nav_to_cmd_id = None
+        # Navigate to the destination waypoint.
+        is_finished = False
+        while not is_finished:
+            # Issue the navigation command about twice a second such that it is easy to terminate the
+            # navigation command (with estop or killing the program).
+            try:
+                nav_to_cmd_id = self._graph_nav_client.navigate_to(destination_waypoint, 1.0,
+                                                                   command_id=nav_to_cmd_id)
+            except ResponseError as e:
+                print("Error while navigating {}".format(e))
+                break
+            time.sleep(.5)  # Sleep for half a second to allow for command execution.
+            # Poll the robot for feedback to determine if the navigation command is complete. Then sit
+            # the robot down once it is finished.
+            is_finished = self._check_success(nav_to_cmd_id)
+
+        
+        self.arm_object_grasp(args[0][0])
+        # Carry object
+        self.carry_object(self,*args)
+
+
+
+    def _search_in_graph(self,*args):
+        object_name=None
+        location_name=None
+        if len(args) < 1:
+            # If no waypoint id is given as input, then return without requesting navigation.
+            print("No object or waypoint provided.")
+            return
+        if args[0][0] in self.object_classes:
+            object_name=args[0][0]
+
+        if args[0][0] in self.location_classes:
+            location_name=args[0][0]
+
+        if len(self.waypoint_nodes)==0:
+            print("waypoint list is empty")
+            return
+        if not object_name and not location_name:
+            print("Location nama and object name not specified")
+            return
+        waypoint_name=None
+        if location_name:
+            for node in self.waypoint_nodes:
+                for location in node.get_locations():
+                    if location.name==location_name:
+                        waypoint_name=node.name
+                        return waypoint_name
+                        
+        if object_name:
+            for node in self.waypoint_nodes:
+                for location in node.get_locations():
+                    for object in location.get_objects():
+                        if object.name==object_name:
+                            waypoint_name==node.name
+                            return waypoint_name
 
     def _pick_object_at_waypt(self,*args):
         '''Navigate to a waypoint and pick object'''
@@ -537,8 +612,8 @@ class GraphNavInterface(object):
             # the robot down once it is finished.
             is_finished = self._check_success(nav_to_cmd_id)
 
-        
-        self.arm_object_grasp(self,*args)
+        object_name=input("what object are you interested in?")
+        self.arm_object_grasp(object_name)
         # Carry object
         self.carry_object(self,*args)
 
@@ -546,11 +621,19 @@ class GraphNavInterface(object):
         #     # Sit the robot down + power off after the navigation command is complete.
         #     self.toggle_power(should_power_on=False)   
 
-    def arm_object_grasp(self,obj_to_grasp=None,*args):
+    def arm_object_grasp(self,obj_to_grasp=None):
         """A simple example of using the Boston Dynamics API to command Spot's arm."""
 
         image_client = self._robot.ensure_client(ImageClient.default_service_name)
         manipulation_api_client = self._robot.ensure_client(ManipulationApiClient.default_service_name)
+        # open gripper
+        gripper_command = RobotCommandBuilder.claw_gripper_open_fraction_command(
+            1.0)
+        command = RobotCommandBuilder.build_synchro_command(gripper_command)
+        cmd_id = self._robot_command_client.robot_command(command)
+
+        # Wait for gripper to open
+        time.sleep(1.5)
         
         image_requests=[]
         for i,source in enumerate(self._image_source):
@@ -569,11 +652,15 @@ class GraphNavInterface(object):
         visual_rgb = cv_visual if len(cv_visual.shape) == 3 else cv2.cvtColor(
             cv_visual, cv2.COLOR_GRAY2RGB)
 
-        detections=segment_image(visual_rgb,self.thing_classes)
+        detections,annotated_image=segment_image(visual_rgb,self.thing_classes)
         obj_list=[]
+        pick_vec=None
         for i in range(len(detections)):
             object_name = self.thing_classes[detections.class_id[i]]  # Extract object name
             if object_name==obj_to_grasp:
+                mask_annotator = sv.MaskAnnotator()
+                annotated_segment = mask_annotator.annotate(scene=annotated_image, detections=detections[i])
+
                 depth_seg=detections.mask[i]
                 non_zero_indices = np.argwhere(depth_seg != 0)
                 # Calculate the mean of these indices
@@ -589,58 +676,19 @@ class GraphNavInterface(object):
 
                 mean_location=mean_location.astype(np.int32)
                 
-                print(f'Found object "{object_name}" at image location ({mean_location[0]}, {mean_location[1]})')
+                print(f'Found object "{object_name}" at image location ({mean_location[1]}, {mean_location[0]})')
                 
-                pick_vec = geometry_pb2.Vec2(x=mean_location[0], y=mean_location[1])
+                pick_vec = geometry_pb2.Vec2(x=mean_location[1], y=mean_location[0])
+                annotated_segment=cv2.circle(annotated_segment,(mean_location[1], mean_location[0]),radius=20,color=(0,0,255),thickness=-1)
+                cv2.imshow("segmentations",annotated_segment)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
                 break
+        breakpoint()
+        if not pick_vec:
+            print("required object not found")
+            return
 
-
-
-        # image_client = self._robot.ensure_client(ImageClient.default_service_name)
-
-        # manipulation_api_client = self._robot.ensure_client(ManipulationApiClient.default_service_name)
-
-
-        # # Take a picture with a camera 
-        # self._robot.logger.info('Getting an image from: ' + 'frontleft_fisheye_image')
-        # image_responses = image_client.get_image_from_sources(['frontleft_fisheye_image'])
-
-        # if len(image_responses) != 1:
-        #     print('Got invalid number of images: ' + str(len(image_responses)))
-        #     print(image_responses)
-        #     assert False
-
-        # image = image_responses[0]
-        # if image.shot.image.pixel_format == image_pb2.Image.PIXEL_FORMAT_DEPTH_U16:
-        #     dtype = np.uint16
-        # else:
-        #     dtype = np.uint8
-        # img = np.fromstring(image.shot.image.data, dtype=dtype)
-        # if image.shot.image.format == image_pb2.Image.FORMAT_RAW:
-        #     img = img.reshape(image.shot.image.rows, image.shot.image.cols)
-        # else:
-        #     img = cv2.imdecode(img, -1)
-
-        # # Show the image to the user and wait for them to click on a pixel
-        # self._robot.logger.info('Click on an object to start grasping...')
-        # image_title = 'Click to grasp'
-        # cv2.namedWindow(image_title)
-        # cv2.setMouseCallback(image_title, cv_mouse_callback)
-
-        # global g_image_click, g_image_display
-        # g_image_display = img
-        # cv2.imshow(image_title, g_image_display)
-        # while g_image_click is None:
-        #     key = cv2.waitKey(1) & 0xFF
-        #     if key == ord('q') or key == ord('Q'):
-        #         # Quit
-        #         print('"q" pressed, exiting.')
-        #         exit(0)
-
-        # self._robot.logger.info('Picking object at image location (' + str(g_image_click[0]) + ', ' +
-        #                 str(g_image_click[1]) + ')')
-
-        #pick_vec = geometry_pb2.Vec2(x=g_image_click[0], y=g_image_click[1])
         image = image_responses[0]
         # Build the proto
         grasp = manipulation_api_pb2.PickObjectInImage(
@@ -799,6 +847,7 @@ class GraphNavInterface(object):
             (9) Clear the current graph.
             (p) Pick Object at waypoint
             (d) Drop Object at waypoint
+            (s) search in graph
             (q) Exit.
             """)
             try:
