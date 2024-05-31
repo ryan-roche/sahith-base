@@ -23,22 +23,24 @@ import pickle
 
 import bosdyn.client.channel
 import bosdyn.client.util
+from geometry_msgs.msg import Pose
 from bosdyn.api import geometry_pb2, power_pb2, estop_pb2, robot_state_pb2, image_pb2, manipulation_api_pb2
 from bosdyn.api.graph_nav import graph_nav_pb2, map_pb2, nav_pb2
 from bosdyn.client.estop import EstopClient
 from bosdyn.client.exceptions import ResponseError
-from bosdyn.client.frame_helpers import get_a_tform_b,VISION_FRAME_NAME, get_odom_tform_body,GRAV_ALIGNED_BODY_FRAME_NAME
+from bosdyn.client.frame_helpers import get_a_tform_b,VISION_FRAME_NAME, get_odom_tform_body,GRAV_ALIGNED_BODY_FRAME_NAME,ODOM_FRAME_NAME
 from bosdyn.client.graph_nav import GraphNavClient
 from bosdyn.client.lease import LeaseClient, LeaseKeepAlive, ResourceAlreadyClaimedError
 from bosdyn.client.math_helpers import Quat, SE3Pose
 from bosdyn.client.power import PowerClient, power_on, safe_power_off
 from bosdyn.client.robot_command import RobotCommandBuilder, RobotCommandClient,block_until_arm_arrives
 from bosdyn.client.robot_state import RobotStateClient
-from bosdyn.client.image import ImageClient
+from bosdyn.client.image import ImageClient,pixel_to_camera_space
 from bosdyn.client.manipulation_api_client import ManipulationApiClient
 
 from grounded_sam_spot_package.grounded_sam_process import segment_image
 from visualization_wrapper.visualiser import Visualiser  # Import the Visualiser class
+from visualization_wrapper.class_defs import Nodes, Semantic_location, Object
 
 g_image_click = None
 g_image_display = None
@@ -122,15 +124,17 @@ class GraphNavInterface(object):
             '9': self._clear_graph,
             'p': self._pick_object_at_waypt,
             'd': self._drop_object_at_waypt,
-            's': self._search_in_graph
+            's': self._search_in_graph,
+            'n': self._navigate_waypoints,
+            'sv': self._save_modified_pkl_file
         }
 
-        self.object_classes=["Bottle", "Can","Handle"]
-        self.location_classes=["Floor","Tabletop","Shelf"]
+        self.object_classes=["Bottle", "Clamp","Rubicks Cube","Brush","Umbrella","Mouse"]
+        self.location_classes=["Floor","Table","Shelf"]
         self.thing_classes=self.object_classes+self.location_classes
 
         self._image_source=['hand_color_image']
-        self.waypoint_nodes=None
+        self.waypoint_nodes=[]
         self.visualizer=Visualiser()
 
     def _get_localization_state(self, *args):
@@ -251,6 +255,10 @@ class GraphNavInterface(object):
         
         for waypoint_node in self.waypoint_nodes:
             self.visualizer.visualise_node(waypoint_node)
+
+    def _save_modified_pkl_file(self,*args):
+        with open(self._upload_filepath + '/semantic_locations.pkl', 'wb') as file:
+            pickle.dump(self.waypoint_nodes, file)
 
     def _navigate_to_anchor(self, *args):
         """Navigate to a pose in seed frame, using anchors."""
@@ -402,6 +410,212 @@ class GraphNavInterface(object):
             if self._powered_on and not self._started_powered_on:
                 # Sit the robot down + power off after the navigation command is complete.
                 self.toggle_power(should_power_on=False)
+
+    def inter_over_area(self, obj, semantic_location):
+        # Get bounding boxes
+        obj_bbox = obj.get_bbox()  # (x1, y1, x2, y2)
+        location_bbox = semantic_location.get_bbox()  # (x1, y1, x2, y2)
+        
+        # Calculate the intersection box coordinates
+        ix1 = max(obj_bbox[0], location_bbox[0])
+        iy1 = max(obj_bbox[1], location_bbox[1])
+        ix2 = min(obj_bbox[2], location_bbox[2])
+        iy2 = min(obj_bbox[3], location_bbox[3])
+        
+        # Check if there is an intersection
+        if ix1 < ix2 and iy1 < iy2:
+            intersection_area = (ix2 - ix1) * (iy2 - iy1)
+        else:
+            intersection_area = 0
+        
+        # Calculate each box's area
+        obj_area = (obj_bbox[2] - obj_bbox[0]) * (obj_bbox[3] - obj_bbox[1])
+        location_area = (location_bbox[2] - location_bbox[0]) * (location_bbox[3] - location_bbox[1])
+        
+        # Calculate Intersection over Union
+        if obj_area == 0:
+            return 0  # to avoid division by zero if both areas are zero
+        else:
+            iou = intersection_area / obj_area
+            return iou   
+
+    def get_dist(self,obj,semantic_location):
+        obj_pose=obj.get_pose()
+        loc_pose=semantic_location.get_pose()
+        dist= np.sqrt(np.square(obj_pose.position.x-loc_pose.position.x)+np.square(obj_pose.position.y-loc_pose.position.y)+np.square(obj_pose.position.z-loc_pose.position.z))
+        return dist
+
+    def navigate_waypoint_power_on(self,waypoint_id):
+        """Navigate to a specific waypoint."""
+        destination_waypoint = graph_nav_util.find_unique_waypoint_id(
+            waypoint_id, self._current_graph, self._current_annotation_name_to_wp_id)
+        if not destination_waypoint:
+            # Failed to find the appropriate unique waypoint id for the navigation command.
+            return
+        if not self.toggle_power(should_power_on=True):
+            print("Failed to power on the robot, and cannot complete navigate to request.")
+            return
+
+        nav_to_cmd_id = None
+        # Navigate to the destination waypoint.
+        is_finished = False
+        while not is_finished:
+            # Issue the navigation command about twice a second such that it is easy to terminate the
+            # navigation command (with estop or killing the program).
+            try:
+                nav_to_cmd_id = self._graph_nav_client.navigate_to(destination_waypoint, 1.0,
+                                                                   command_id=nav_to_cmd_id)
+            except ResponseError as e:
+                print("Error while navigating {}".format(e))
+                break
+            time.sleep(.5)  # Sleep for half a second to allow for command execution.
+            # Poll the robot for feedback to determine if the navigation command is complete. Then sit
+            # the robot down once it is finished.
+            is_finished = self._check_success(nav_to_cmd_id)
+
+
+    def _navigate_waypoints(self,*args):
+        for i,waypoint in enumerate(self.waypoint_nodes):
+            print("Going to: "+ waypoint.name)
+            waypoint_id =self._current_annotation_name_to_wp_id[waypoint.name]
+            if not waypoint_id:
+                continue
+            self.navigate_waypoint_power_on( waypoint_id)
+            self._capt_objects_waypt(i)
+    
+    def _capt_objects_waypt(self,node_num):
+        # open gripper
+        waypoint=self.waypoint_nodes[node_num]
+        gripper_command = RobotCommandBuilder.claw_gripper_open_fraction_command(
+            1.0)
+        command = RobotCommandBuilder.build_synchro_command(gripper_command)
+        cmd_id = self._robot_command_client.robot_command(command)
+
+        # Wait for gripper to open
+        time.sleep(1.5)
+        image_client = self._robot.ensure_client(ImageClient.default_service_name)
+        image_requests=[]
+        image_source=['hand_depth_in_hand_color_frame','hand_color_image']
+        for i,source in enumerate(image_source):
+            image_requests.append(image_pb2.ImageRequest(image_source_name=image_source[i],quality_percent=100))
+
+        image_responses = image_client.get_image(image_requests)
+        if len(image_responses) < 2:
+            print('Error: failed to get images.')
+            return False
+
+        # Depth is a raw bytestream
+        cv_depth = np.frombuffer(image_responses[0].shot.image.data, dtype=np.uint16)
+        cv_depth = cv_depth.reshape(image_responses[0].shot.image.rows,
+                                    image_responses[0].shot.image.cols)
+
+        # Visual is a JPEG
+        cv_visual = cv2.imdecode(np.frombuffer(image_responses[1].shot.image.data, dtype=np.uint8), -1)
+
+        # Convert the visual image from a single channel to RGB so we can add color
+        visual_rgb = cv_visual if len(cv_visual.shape) == 3 else cv2.cvtColor(
+            cv_visual, cv2.COLOR_GRAY2RGB)
+
+        detections,annotated_image=segment_image(visual_rgb,self.object_classes)
+        obj_list=[]
+        for i in range(len(detections)):
+            depth_seg=detections.mask[i]*cv_depth
+            mean_depth=np.mean(depth_seg[depth_seg!=0])
+        
+            object_name = self.thing_classes[detections.class_id[i]]  # Extract object name
+
+            try:
+                min_val_depth=np.min(depth_seg[depth_seg!=0])
+            except ValueError:
+                min_val_depth=0
+                object_name = self.thing_classes[detections[i].class_id[0]]  # Extract object name
+
+            non_zero_indices = np.argwhere(depth_seg != 0)
+            # Calculate the mean of these indices
+            
+            if non_zero_indices.size==0:
+                print(object_name+ " out of bound of depth camera's field of view")
+                continue
+            try:
+                mean_location = non_zero_indices.mean(axis=0)
+            except RuntimeWarning:
+                print(object_name+ " out of bound of depth camera's field of view")
+                continue
+
+            mean_location=mean_location.astype(np.int32)
+            
+            print(f'Found object "{object_name}" at image location ({mean_location[1]}, {mean_location[0]})')
+
+            pick_vec = geometry_pb2.Vec2(x=mean_location[1], y=mean_location[0])
+
+            # Build the proto for each point
+            grasp = manipulation_api_pb2.PickObjectInImage(
+                pixel_xy=pick_vec, 
+                transforms_snapshot_for_camera=image_responses[1].shot.transforms_snapshot,
+                frame_name_image_sensor=image_responses[1].shot.frame_name_image_sensor,
+                camera_model=image_responses[1].source.pinhole)
+            
+            depth_point=cv_depth[mean_location[1],mean_location[0]]
+
+            
+            tform_snapshot = image_responses[1].shot.transforms_snapshot
+            if(min_val_depth<2000): #depth less than 1 meter
+                pixel_point=pixel_to_camera_space(image_responses[1],mean_location[1],mean_location[0],depth_point/1000)
+                cam_to_world_tform = get_a_tform_b(tform_snapshot,ODOM_FRAME_NAME,image_responses[1].shot.frame_name_image_sensor)
+                world_coord=cam_to_world_tform.transform_cloud(pixel_point)
+                
+                print("added "+str(object_name)+" at "+str(world_coord) +" to the graph")
+
+                annotated_temp=cv2.circle(annotated_image,(mean_location[1], mean_location[0]),radius=20,color=(0,0,255),thickness=-1)
+                cv2.imshow(str(object_name)+" segmentation",annotated_temp)
+                cv2.waitKey(0)
+                cv2.destroyAllWindows()
+
+                change=input("Should we change "+object_name+": ")
+                if change=="":
+                    print("Object name= "+object_name)
+                elif change=="skip":
+                    print("Object "+object_name+" skipped")
+                    continue
+                else:
+                    print("Object "+object_name+" changed to "+ change)
+                    object_name=change
+                temp_pose=Pose()
+                temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
+                temp_pose.orientation.x=1
+
+                if object_name in self.object_classes:
+                    obj_node= Object(object_name,temp_pose,detections.xyxy[i])
+                    obj_list.append(obj_node)
+                annotated_image=cv2.circle(annotated_image,(mean_location[1], mean_location[0]),radius=20,color=(0,0,255),thickness=-1)
+                
+                # Upload the modified graph back to the robot
+        for semantic_location in self.waypoint_nodes[node_num].get_locations():
+            semantic_location.delete_all_objects()
+        
+        for obj in obj_list:
+            max_inter,max_location,min_dist,closest_loc=0,None,1e7,None
+            for semantic_location in self.waypoint_nodes[node_num].get_locations():
+                inter=self.inter_over_area(obj,semantic_location)
+                dist=self.get_dist(obj,semantic_location)
+                if inter>max_inter:
+                    max_location=semantic_location
+                    max_inter=inter
+                if dist<min_dist:
+                    closest_loc=semantic_location
+                    min_dist=dist
+            if max_location:
+                max_location.add_object(obj)
+                obj.add_location(max_location)
+            elif min_dist<1e7:
+                closest_loc.add_object(obj)
+                obj.add_location(closest_loc)
+
+        #delete old waypoint visualization
+        self.visualizer.clear_markers()
+        for waypt in self.waypoint_nodes:
+            self.visualizer.visualise_node(waypt)
+        #self.waypoint_nodes.append(waypoint_node)
 
     def _drop_object_at_waypt(self,*args):
         '''Navigate to a waypoint and drop object'''
@@ -848,6 +1062,8 @@ class GraphNavInterface(object):
             (p) Pick Object at waypoint
             (d) Drop Object at waypoint
             (s) search in graph
+            (n) Navigate Waypoints
+            (sv): save_modified_pkl_file
             (q) Exit.
             """)
             try:

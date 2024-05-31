@@ -10,20 +10,11 @@ import logging
 import os
 import sys
 import time
-import cv2
-import numpy as np
-import tkinter as tk
-from tkinter import simpledialog
 
 import google.protobuf.timestamp_pb2
 import graph_nav_util
 import grpc
 from google.protobuf import wrappers_pb2 as wrappers
-from visualization_wrapper.class_defs import Nodes, Semantic_location, Object
-from geometry_msgs.msg import Pose, Point, Quaternion
-from visualization_wrapper.visualiser import Visualiser  # Import the Visualiser class
-import pickle
-
 
 import bosdyn.client.channel
 import bosdyn.client.util
@@ -33,20 +24,7 @@ from bosdyn.client.graph_nav import GraphNavClient
 from bosdyn.client.map_processing import MapProcessingServiceClient
 from bosdyn.client.math_helpers import Quat, SE3Pose
 from bosdyn.client.recording import GraphNavRecordingServiceClient
-from bosdyn.client.image import ImageClient, pixel_to_camera_space, build_image_request
-from bosdyn.api import geometry_pb2, image_pb2,manipulation_api_pb2
-from bosdyn.client.frame_helpers import get_a_tform_b, ODOM_FRAME_NAME,get_odom_tform_body
 
-
-current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
-sys.path.append(parent_dir)
-
-# Now try to import segment_image
-from grounded_sam_spot_package.grounded_sam_process import segment_image
-
-# g_image_click = []
-# g_image_display = []
 
 class RecordingInterface(object):
     """Recording service command line interface."""
@@ -97,30 +75,8 @@ class RecordingInterface(object):
             '7': self._create_new_edge,
             '8': self._create_loop,
             '9': self._auto_close_loops_prompt,
-            'a': self._optimize_anchoring,
-            'o': self._add_object,
-            'v': self._visualize_all_nodes
+            'a': self._optimize_anchoring
         }
-        # camera='frontleft'
-        # self._image_source=[camera + '_depth_in_visual_frame',camera + '_fisheye_image']
-        self._image_source=['hand_depth_in_hand_color_frame','hand_color_image']
-        self._object_cap_dict={
-            '0':self._create_waypoint_and_capt_obj_node,
-            '1':self._capt_object
-        }
-        self.g_image_clicks=[]
-        self.g_image_display=[]
-
-
-        # self.object_classes=["Bottle", "Clamp","Rubicks Cube","Brush","Umbrella","Mouse"]
-        self.location_classes=["Floor","Table","Shelf"]
-        self.object_classes=[]
-
-        self.thing_classes=self.object_classes+self.location_classes
-        self.visualizer=Visualiser()
-
-        self.waypoint_nodes=[]
-
 
     def should_we_start_recording(self):
         # Before starting to record, check the state of the GraphNav system.
@@ -195,14 +151,6 @@ class RecordingInterface(object):
         else:
             print("Could not create a waypoint.")
 
-    def _create_custom_waypoint(self,name, *args):
-        """Create a custom waypoint at the robot's current location."""
-        resp = self._recording_client.create_waypoint(waypoint_name=name)
-        if resp.status == recording_pb2.CreateWaypointResponse.STATUS_OK:
-            print("Successfully created waypoint- "+name)
-        else:
-            print("Could not create waypoint- "+name)
-
     def _download_full_graph(self, *args):
         """Download the graph and snapshots from the robot."""
         graph = self._graph_nav_client.download_graph()
@@ -215,8 +163,6 @@ class RecordingInterface(object):
         # Download the waypoint and edge snapshots.
         self._download_and_write_waypoint_snapshots(graph.waypoints)
         self._download_and_write_edge_snapshots(graph.edges)
-        with open('downloaded_graph/semantic_locations.pkl', 'wb') as file:
-            pickle.dump(self.waypoint_nodes, file)
 
     def _write_full_graph(self, graph):
         """Download the graph from robot to the specified, local filepath location."""
@@ -389,267 +335,6 @@ class RecordingInterface(object):
         else:
             print("Error optimizing {}".format(response))
 
-    def cv_mouse_callback(self, event, x, y, flags, param):
-        
-        clone = self.g_image_display.copy()
-
-        # Handle left button release event
-        if event == cv2.EVENT_LBUTTONUP:
-            # Prompt for object name
-            tk_root = tk.Tk()
-            tk_root.withdraw()  # Hide the main window
-            object_name = simpledialog.askstring("Input", "Enter object name:", parent=tk_root)
-            tk_root.destroy()
-
-            if object_name:
-                print("added object name")
-                self.g_image_clicks.append({'coords': (x, y), 'name': object_name})
-                self._robot.logger.info(f'Object "{object_name}" added at ({x}, {y})')
-            else:
-                self._robot.logger.info('No object name entered, point not added')
-
-        # Draw lines and markers on the image
-        color_line = (30, 30, 30)
-        color_marker = (0, 255, 0)
-        thickness_line = 2
-        thickness_marker = 2
-        marker_type = cv2.MARKER_TILTED_CROSS
-        image_title = 'Select objects to grasp'
-        height, width = clone.shape[:2]
-
-        # Draw current mouse position lines
-        cv2.line(clone, (0, y), (width, y), color_line, thickness_line)
-        cv2.line(clone, (x, 0), (x, height), color_line, thickness_line)
-
-        # Draw markers for previously clicked points and annotate with names
-        for point_info in self.g_image_clicks:
-            point = point_info['coords']
-            cv2.drawMarker(clone, point, color_marker, marker_type, markerSize=10, thickness=thickness_marker)
-            cv2.putText(clone, point_info['name'], (point[0] + 10, point[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color_marker, 1, cv2.LINE_AA)
-
-        cv2.imshow(image_title, clone)
-
-    def inter_over_area(self, obj, semantic_location):
-        # Get bounding boxes
-        obj_bbox = obj.get_bbox()  # (x1, y1, x2, y2)
-        location_bbox = semantic_location.get_bbox()  # (x1, y1, x2, y2)
-        
-        # Calculate the intersection box coordinates
-        ix1 = max(obj_bbox[0], location_bbox[0])
-        iy1 = max(obj_bbox[1], location_bbox[1])
-        ix2 = min(obj_bbox[2], location_bbox[2])
-        iy2 = min(obj_bbox[3], location_bbox[3])
-        
-        # Check if there is an intersection
-        if ix1 < ix2 and iy1 < iy2:
-            intersection_area = (ix2 - ix1) * (iy2 - iy1)
-        else:
-            intersection_area = 0
-        
-        # Calculate each box's area
-        obj_area = (obj_bbox[2] - obj_bbox[0]) * (obj_bbox[3] - obj_bbox[1])
-        location_area = (location_bbox[2] - location_bbox[0]) * (location_bbox[3] - location_bbox[1])
-        
-        # Calculate Intersection over Union
-        if obj_area == 0:
-            return 0  # to avoid division by zero if both areas are zero
-        else:
-            iou = intersection_area / obj_area
-            return iou   
-
-    def get_dist(self,obj,semantic_location):
-        obj_pose=obj.get_pose()
-        loc_pose=semantic_location.get_pose()
-        dist= np.sqrt(np.square(obj_pose.position.x-loc_pose.position.x)+np.square(obj_pose.position.y-loc_pose.position.y)+np.square(obj_pose.position.z-loc_pose.position.z))
-        return dist
-
-    def _create_waypoint_and_capt_obj_node(self,*args):
-        print("capturing waypoint")
-        wp_name=input("Enter waypoint name: ")
-        self._create_custom_waypoint(wp_name)
-        self._capt_object(wp_name)
-
-    def _visualize_all_nodes(self,*args):
-        for waypoint_node in self.waypoint_nodes:
-            self.visualizer.visualise_node(waypoint_node)
-
-    def _capt_object(self,waypoint_name=None,*args):
-
-        if(waypoint_name==None):
-            print("waypoint name not input")
-            return
-
-        state = self._graph_nav_client.get_localization_state()       
-        odom_tform_body = get_odom_tform_body(state.robot_kinematics.transforms_snapshot)
-        
-        waypoint_pose=Pose()    
-        waypoint_pose.position.x,waypoint_pose.position.y,waypoint_pose.position.z= odom_tform_body.x,odom_tform_body.y,odom_tform_body.z
-        waypoint_pose.orientation.x,waypoint_pose.orientation.y,waypoint_pose.orientation.z,waypoint_pose.orientation.w=odom_tform_body.rotation.x, odom_tform_body.rotation.y,odom_tform_body.rotation.z,odom_tform_body.rotation.w
-        waypoint_node = Nodes(waypoint_name,waypoint_pose )
-        
-        print("waypoint position: "+ str(waypoint_pose.position.x)+" "+str(waypoint_pose.position.y)+" "+str(waypoint_pose.position.z))
-        #capture objects
-        image_client = self._robot.ensure_client(ImageClient.default_service_name)
-        image_requests=[]
-        for i,source in enumerate(self._image_source):
-            image_requests.append(image_pb2.ImageRequest(image_source_name=self._image_source[i],quality_percent=100))
-
-        image_responses = image_client.get_image(image_requests)
-        if len(image_responses) < 2:
-            print('Error: failed to get images.')
-            return False
-
-        # Depth is a raw bytestream
-        cv_depth = np.frombuffer(image_responses[0].shot.image.data, dtype=np.uint16)
-        cv_depth = cv_depth.reshape(image_responses[0].shot.image.rows,
-                                    image_responses[0].shot.image.cols)
-
-        # Visual is a JPEG
-        cv_visual = cv2.imdecode(np.frombuffer(image_responses[1].shot.image.data, dtype=np.uint8), -1)
-
-        # Convert the visual image from a single channel to RGB so we can add color
-        visual_rgb = cv_visual if len(cv_visual.shape) == 3 else cv2.cvtColor(
-            cv_visual, cv2.COLOR_GRAY2RGB)
-
-        detections,annotated_image=segment_image(visual_rgb,self.thing_classes)
-        obj_list=[]
-        for i in range(len(detections)):
-            depth_seg=detections.mask[i]*cv_depth
-            mean_depth=np.mean(depth_seg[depth_seg!=0])
-        
-            object_name = self.thing_classes[detections.class_id[i]]  # Extract object name
-
-            try:
-                min_val_depth=np.min(depth_seg[depth_seg!=0])
-            except ValueError:
-                min_val_depth=0
-                object_name = self.thing_classes[detections[i].class_id[0]]  # Extract object name
-
-            non_zero_indices = np.argwhere(depth_seg != 0)
-            # Calculate the mean of these indices
-            
-            if non_zero_indices.size==0:
-                print(object_name+ " out of bound of depth camera's field of view")
-                continue
-            try:
-                mean_location = non_zero_indices.mean(axis=0)
-            except RuntimeWarning:
-                print(object_name+ " out of bound of depth camera's field of view")
-                continue
-
-            mean_location=mean_location.astype(np.int32)
-            
-            print(f'Found object "{object_name}" at image location ({mean_location[1]}, {mean_location[0]})')
-
-            pick_vec = geometry_pb2.Vec2(x=mean_location[1], y=mean_location[0])
-
-            # Build the proto for each point
-            grasp = manipulation_api_pb2.PickObjectInImage(
-                pixel_xy=pick_vec, 
-                transforms_snapshot_for_camera=image_responses[1].shot.transforms_snapshot,
-                frame_name_image_sensor=image_responses[1].shot.frame_name_image_sensor,
-                camera_model=image_responses[1].source.pinhole)
-            
-            depth_point=cv_depth[mean_location[1],mean_location[0]]
-
-            
-            tform_snapshot = image_responses[1].shot.transforms_snapshot
-            if(min_val_depth<2000): #depth less than 1 meter
-                pixel_point=pixel_to_camera_space(image_responses[1],mean_location[1],mean_location[0],depth_point/1000)
-                cam_to_world_tform = get_a_tform_b(tform_snapshot,ODOM_FRAME_NAME,image_responses[1].shot.frame_name_image_sensor)
-                world_coord=cam_to_world_tform.transform_cloud(pixel_point)
-                
-                print("added "+str(object_name)+" at "+str(world_coord) +" to the graph")
-                temp_pose=Pose()
-                temp_pose.position.x,temp_pose.position.y,temp_pose.position.z=world_coord
-                temp_pose.orientation.x=1
-                annotated_temp=cv2.circle(annotated_image,(mean_location[1], mean_location[0]),radius=20,color=(0,0,255),thickness=-1)
-                cv2.imshow(str(object_name)+" segmentation",annotated_temp)
-                cv2.waitKey(0)
-                cv2.destroyAllWindows()
-
-                change=input("Should we change "+object_name+": ")
-                if change=="":
-                    print("Object name= "+object_name)
-                elif change=="skip":
-                    print("Object "+object_name+" skipped")
-                    continue
-                else:
-                    print("Object "+object_name+" changed to "+ change)
-                    object_name=change
-                if object_name in self.location_classes:
-                    loc_node= Semantic_location(object_name, temp_pose, waypoint_name,detections.xyxy[i])
-                    waypoint_node.add_location(loc_node)
-                else:
-                    obj_node= Object(object_name,temp_pose,detections.xyxy[i])
-                    obj_list.append(obj_node)
-                #waypoint.annotations[object_name].CopyFrom(grasp)
-
-        # Upload the modified graph back to the robot
-        for obj in obj_list:
-            max_inter,max_location,min_dist,closest_loc=0,None,1e7,None
-            for semantic_location in waypoint_node.get_locations():
-                inter=self.inter_over_area(obj,semantic_location)
-                dist=self.get_dist(obj,semantic_location)
-                if inter>max_inter:
-                    max_location=semantic_location
-                    max_inter=inter
-                if dist<min_dist:
-                    closest_loc=semantic_location
-                    min_dist=dist
-            if max_location:
-                max_location.add_object(obj)
-                obj.add_location(max_location)
-            elif min_dist<1e7:
-                closest_loc.add_object(obj)
-                obj.add_location(closest_loc)
-        self.visualizer.visualise_node(waypoint_node)
-        self.waypoint_nodes.append(waypoint_node)
-        #self._graph_nav_client.upload_graph(graph)
-        print(f"Successfully added objects.")
-        
-
-        return True
-
-
-    def _add_object(self,*args):
-        """A simple example of using the Boston Dynamics API to command Spot's arm."""
-
-        
-        status = self._recording_client.get_record_status()
-        if status.is_recording:
-            print("Recording. Proceed to capture object node")
-        else:
-            print("Start recording to capture object.")
-            return
-        
-        while True:
-            print("""
-            Options for capturing object:
-            (0) create a new waypoint at spot loaction and capture object.
-            (1) add object to previous waypoint. (add waypoint to add to specific waypoint)
-            (q) Exit.
-            """)
-            try:
-                inputs = input('>')
-            except NameError:
-                pass
-            req_type = str.split(inputs)[0]
-
-            if req_type == 'q':
-                break
-
-            if req_type not in self._object_cap_dict:
-                print("Request not in the known command dictionary.")
-                continue
-            try:
-                cmd_func = self._object_cap_dict[req_type]
-                cmd_func(str.split(inputs)[1:])
-            except Exception as e:
-                print(e)
-
-
-
     def _get_waypoint(self, id):
         """Get waypoint from graph (return None if waypoint not found)"""
 
@@ -697,8 +382,6 @@ class RecordingInterface(object):
             (8) Create new edge from last waypoint to first waypoint using odometry.
             (9) Automatically find and close loops.
             (a) Optimize the map's anchoring.
-            (o) Add object node
-            (v) Visualize all nodes
             (q) Exit.
             """)
             try:
