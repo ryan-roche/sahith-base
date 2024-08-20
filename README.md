@@ -1,6 +1,6 @@
 Informal Documentation of the project code:
 
-- Launching the Code
+# Launching the Code
 
 
 Original README begins below.
