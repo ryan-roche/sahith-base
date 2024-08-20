@@ -1,6 +1,9 @@
 Informal Documentation of the project code:
 
-# Launching the Code
+## Launching the Code
+
+- Project code is located at `/python/examples/project_nav_man`, but requires & expects a ROS Noetic environment with the Spot ROS1 driver installed. As ROS Noetic has been discontinued, any project code needs to be ported to ROS2 for further use & development.
+- For the sake of testing the existing project code I am building a Dockerfile that uses the `osrf/ros:noetic-desktop-full` image as its base since ROS Noetic can no longer be installed through `apt`
 
 
 Original README begins below.
