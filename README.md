@@ -1,3 +1,9 @@
+This is a fork of Sahith's spot-sdk repository, within which he developed his topological mapping project for the spot robot, which is in the [project-nav-man](https://github.com/ryan-roche/sahith-base/tree/project_nav_man) branch.
+
+Original README starts below
+
+---
+
 <!--
 Copyright (c) 2023 Boston Dynamics, Inc.  All rights reserved.
 
