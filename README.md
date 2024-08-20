@@ -1,3 +1,12 @@
+Informal Documentation of the project code:
+
+- Launching the Code
+
+
+Original README begins below.
+
+---
+
 <!--
 Copyright (c) 2022 Boston Dynamics, Inc.  All rights reserved.
 
